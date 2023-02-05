@@ -1,19 +1,13 @@
-use std::{
-    fs,
-    path::Path,
-};
-use format::BinaryChunk;
 use crate::format::PmanFile;
-
+use format::BinaryChunk;
+use std::{fs, path::Path};
 
 mod format;
 
-
 fn main() {
-    let path = "packfile.dat";
-    let buffer = fs::read(path).expect("Could not read the data file");
+    let buffer = include_bytes!("../packfile.dat");
 
-    match PmanFile::new_read(&buffer, &mut 0) {
+    match PmanFile::new_read(buffer, &mut 0) {
         Ok(file) => {
             let path_dir = Path::new("output");
             let _ = fs::remove_dir_all(path_dir);
@@ -31,4 +25,3 @@ fn main() {
         Err(e) => println!("{:?}", e),
     }
 }
-
