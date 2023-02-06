@@ -1,3 +1,6 @@
+#![warn(clippy::pedantic)]
+#![allow(clippy::if_not_else)]
+
 mod format;
 
 use crate::format::PmanFile;

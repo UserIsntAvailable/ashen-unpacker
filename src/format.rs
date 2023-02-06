@@ -3,9 +3,6 @@ use std::fmt::Debug;
 use std::io::Read;
 use std::str;
 
-// TODO(Unavailable): let x = match ... { Ok(s) { s } Err() { return error } } could be refactor to
-// let Ok(x) = ... else { ... };
-//
 // TODO(Unavailable): Move `BinaryError` and `ZlibDataError` to `error.rs`.
 //
 // TODO(Unavailable): Implement `Error` for `BinaryError` and `ZlibDataError`.
@@ -46,6 +43,7 @@ pub trait BinaryChunk {
     where
         Self: Sized;
 }
+
 pub trait SizedBinaryChunk {
     fn new_read(buffer: &[u8], offset: &mut usize, size: usize) -> Result<Self, BinaryError>
     where
@@ -57,23 +55,21 @@ pub struct PmanHeader {
     pub num_files: u32,
     pub copyright: String,
 }
+
 impl BinaryChunk for PmanHeader {
     fn new_read(buffer: &[u8], offset: &mut usize) -> Result<Self, BinaryError>
     where
         Self: Sized,
     {
-        let mut read_part = |size| (offset.clone(), read_part(buffer, offset, size));
+        let mut read_part = |size| (*offset, read_part(buffer, offset, size));
 
         // PMAN
         let (pman_offset, pman) = read_part(4);
-        let pman = match str::from_utf8(pman) {
-            Ok(s) => s,
-            Err(_) => {
-                return Err(BinaryError::InvalidSection {
-                    section: "HEADER - PMAN",
-                    offset: pman_offset,
-                })
-            }
+        let Ok(pman) = str::from_utf8(pman) else {
+            return Err(BinaryError::InvalidSection {
+                section: "HEADER - PMAN",
+                offset: pman_offset,
+            })
         };
         if pman != "PMAN" {
             return Err(BinaryError::InvalidFormat {
@@ -89,14 +85,11 @@ impl BinaryChunk for PmanHeader {
 
         // Copyright
         let (copyright_offset, copyright) = read_part(56);
-        let copyright = match str::from_utf8(copyright) {
-            Ok(s) => s,
-            Err(_) => {
-                return Err(BinaryError::InvalidSection {
-                    section: "HEADER - Copyright",
-                    offset: copyright_offset,
-                })
-            }
+        let Ok(copyright) = str::from_utf8(copyright) else {
+            return Err(BinaryError::InvalidSection {
+                section: "HEADER - Copyright",
+                offset: copyright_offset,
+            })
         };
 
         Ok(Self {
@@ -113,12 +106,13 @@ pub struct PmanFileDeclaration {
     pub size: u32,
     // pub end: u32
 }
+
 impl BinaryChunk for PmanFileDeclaration {
     fn new_read(buffer: &[u8], offset: &mut usize) -> Result<Self, BinaryError>
     where
         Self: Sized,
     {
-        let mut read_part = |size| (offset.clone(), read_part(buffer, offset, size));
+        let mut read_part = |size| (*offset, read_part(buffer, offset, size));
 
         // Start
         let (start_offset, start) = read_part(4);
@@ -173,24 +167,21 @@ impl SizedBinaryChunk for PmanFileData {
 
 impl PmanFileData {
     pub fn is_zlib(&self) -> bool {
-        return self.data[0] == b'Z'
-            && self.data[1] == b'L'
-            && self.data[5] == 0x78
-            && self.data[6] == 0xDA;
+        self.data[0] == b'Z' && self.data[1] == b'L' && self.data[5] == 0x78 && self.data[6] == 0xDA
     }
 
     pub fn zlib_data(&self) -> Result<Vec<u8>, ZlibDataError> {
         if !self.is_zlib() {
             Err(ZlibDataError::NotZlibData)
         } else {
-            let size = u32::from_le_bytes([self.data[2], self.data[3], self.data[4], 0]);
+            let size = u32::from_le_bytes([self.data[2], self.data[3], self.data[4], 0]) as usize;
 
             let mut d = ZlibDecoder::new(&self.data[5..]);
-            let mut s = Vec::<u8>::with_capacity(size as usize);
+            let mut s = Vec::<u8>::with_capacity(size);
             let size_calc = d.read_to_end(&mut s).unwrap();
-            if size_calc as u32 != size {
+            if size_calc != size {
                 Err(ZlibDataError::InvalidSize {
-                    expected_size: size as usize,
+                    expected_size: size,
                     actual_size: size_calc,
                 })
             } else {
@@ -223,13 +214,7 @@ impl BinaryChunk for PmanFile {
         // Files
         let files = file_declarations
             .iter()
-            .map(|d| {
-                PmanFileData::new_read(
-                    buffer,
-                    &mut (d.offset.clone() as usize),
-                    d.size.clone() as usize,
-                )
-            })
+            .map(|d| PmanFileData::new_read(buffer, &mut (d.offset as usize), d.size as usize))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self {
