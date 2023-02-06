@@ -12,17 +12,17 @@ fn main() -> eyre::Result<()> {
 
     let output_dir = Path::new("output");
     // the directory might not exists, so ignore it.
-    let _ = fs::remove_dir_all(output_dir);
+    _ = fs::remove_dir_all(output_dir);
     fs::create_dir_all(output_dir)?;
 
     for (declaration, file) in pman_file.file_declarations.iter().zip(pman_file.files) {
         let mut path = output_dir.join(format!("{:X}", declaration.offset));
 
         if !file.is_zlib() {
-            path.set_extension(".dat");
+            path.set_extension("dat");
             fs::write(path, file.data)?;
         } else {
-            path.set_extension(".zlib");
+            path.set_extension("zlib");
             fs::write(path, file.zlib_data().expect("Invalid ZLIB archive"))?;
         }
     }
