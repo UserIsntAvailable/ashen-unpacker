@@ -3,6 +3,13 @@ use std::fmt::Debug;
 use std::io::Read;
 use std::str;
 
+// TODO(Unavailable): let x = match ... { Ok(s) { s } Err() { return error } } could be refactor to
+// let Ok(x) = ... else { ... };
+//
+// TODO(Unavailable): Move `BinaryError` and `ZlibDataError` to `error.rs`.
+//
+// TODO(Unavailable): Implement `Error` for `BinaryError` and `ZlibDataError`.
+
 #[derive(Debug)]
 pub enum BinaryError {
     InvalidSection {

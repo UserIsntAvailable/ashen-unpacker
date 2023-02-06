@@ -1,27 +1,33 @@
+mod format;
+
 use crate::format::PmanFile;
 use format::BinaryChunk;
 use std::{fs, path::Path};
 
-mod format;
+fn main() -> eyre::Result<()> {
+    let file_bytes = include_bytes!("../packfile.dat");
+    let mut offset = 0;
+    let pman_file = PmanFile::new_read(file_bytes, &mut offset)
+        .expect("packfile.dat should be exists and be a valid ashen file.");
 
-fn main() {
-    let buffer = include_bytes!("../packfile.dat");
+    let output_dir = Path::new("output");
+    // the directory might not exists, so ignore it.
+    let _ = fs::remove_dir_all(output_dir);
+    fs::create_dir_all(output_dir)?;
 
-    match PmanFile::new_read(buffer, &mut 0) {
-        Ok(file) => {
-            let path_dir = Path::new("output");
-            let _ = fs::remove_dir_all(path_dir);
-            fs::create_dir_all(path_dir).expect("Cannot create an output directory");
-            for (declaration, file) in file.file_declarations.iter().zip(file.files) {
-                let path = path_dir.join(format!("{:X}.dat", declaration.offset));
-                fs::write(&path, &file.data).expect("Could not write a data file");
-                if file.is_zlib() {
-                    let path = path_dir.join(format!("{:X}.zlib", declaration.offset));
-                    let data = file.zlib_data().expect("Invalid ZLIB archive");
-                    fs::write(&path, &data).expect("Could not write a data file");
-                }
-            }
+    for (declaration, file) in pman_file.file_declarations.iter().zip(pman_file.files) {
+        let mut path = output_dir.join(format!("{:X}", declaration.offset));
+
+        if !file.is_zlib() {
+            path.set_extension(".dat");
+            fs::write(path, file.data)?;
+        } else {
+            path.set_extension(".zlib");
+            fs::write(path, file.zlib_data().expect("Invalid ZLIB archive"))?;
         }
-        Err(e) => println!("{:?}", e),
     }
+
+    println!("Current file offset {offset:X}");
+
+    Ok(())
 }
