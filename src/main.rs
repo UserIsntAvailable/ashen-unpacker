@@ -5,7 +5,7 @@ use format::BinaryChunk;
 use std::{fs, path::Path};
 
 fn main() -> eyre::Result<()> {
-    let file_bytes = include_bytes!("../packfile.dat");
+    let file_bytes = include_bytes!("../.res/packfile.dat");
     let mut offset = 0;
     let pman_file = PmanFile::new_read(file_bytes, &mut offset)
         .expect("packfile.dat should be exists and be a valid ashen file.");
