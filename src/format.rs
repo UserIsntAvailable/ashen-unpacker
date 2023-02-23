@@ -4,7 +4,6 @@ use std::io::Read;
 use std::str;
 
 // TODO(Unavailable): Move `BinaryError` and `ZlibDataError` to `error.rs`.
-//
 // TODO(Unavailable): Implement `Error` for `BinaryError` and `ZlibDataError`.
 
 #[derive(Debug)]

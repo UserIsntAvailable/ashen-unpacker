@@ -11,10 +11,10 @@ fn main() -> eyre::Result<()> {
     let file_bytes = include_bytes!("../.res/packfile.dat");
     let mut offset = 0;
     let pman_file = PmanFile::new_read(file_bytes, &mut offset)
-        .expect("packfile.dat should be exists and be a valid ashen file.");
+        .expect("packfile.dat should exists and be a valid ashen file.");
 
     let output_dir = Path::new("output");
-    // the directory might not exists, so ignore it.
+    // the directory might not exists, so ignore the error.
     _ = fs::remove_dir_all(output_dir);
     fs::create_dir_all(output_dir)?;
 
@@ -30,7 +30,7 @@ fn main() -> eyre::Result<()> {
         }
     }
 
-    println!("Current file offset {offset:X}");
+    println!("Current file offset {offset:#x}");
 
     Ok(())
 }
