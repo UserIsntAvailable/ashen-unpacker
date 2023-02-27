@@ -19,7 +19,7 @@ fn main() -> eyre::Result<()> {
     fs::create_dir_all(output_dir)?;
 
     for (declaration, file) in pman_file.file_declarations.iter().zip(pman_file.files) {
-        let mut path = output_dir.join(format!("{:X}", declaration.offset));
+        let mut path = output_dir.join(format!("{:08X}", declaration.offset));
 
         if !file.is_zlib() {
             path.set_extension("dat");
