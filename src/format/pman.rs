@@ -5,8 +5,11 @@ use nom::{
     number::complete::le_u32,
     IResult,
 };
-use std::mem::size_of;
-use std::{io::Read, ops::Index};
+use std::{io, mem::size_of};
+use std::{
+    io::{Read, Write},
+    ops::Index,
+};
 
 type Result<'a, T> = IResult<&'a [u8], T>;
 
@@ -55,13 +58,14 @@ impl PmanFileData {
     }
 }
 
-const HEADER_SEP: [u8; 0x10] = [0; 0x10];
+const HEADER_MAGIC_STRING: [u8; 4] = [b'P', b'M', b'A', b'N'];
+const HEADER_SEPARATOR: [u8; 0x10] = [0; 0x10];
 
 fn parse_header(input: &[u8]) -> Result<(String, u32)> {
-    let (input, _) = tag("PMAN")(input)?;
+    let (input, _) = tag(HEADER_MAGIC_STRING)(input)?;
     let (input, file_count) = le_u32(input)?;
     let (input, copyright) = take(0x28u8)(input)?;
-    let (input, _) = tag(HEADER_SEP)(input)?;
+    let (input, _) = tag(HEADER_SEPARATOR)(input)?;
 
     Ok((
         input,
@@ -135,13 +139,6 @@ impl PmanFile {
         Ok(_new(&bytes).map_err(|err| err.map_input(<[u8]>::to_vec))?.1)
     }
 
-    pub fn files_start_offset(&self) -> usize {
-        let header = 4 + size_of::<u32>() + self.copyright.len() + HEADER_SEP.len();
-        let entry_table = get_entry_table_size(self.files.len() as u32);
-
-        header + entry_table
-    }
-
     pub fn copyright(&self) -> &str {
         &self.copyright
     }
@@ -156,6 +153,46 @@ impl PmanFile {
 
     pub fn files_mut(&mut self) -> &mut Vec<PmanFileData> {
         &mut self.files
+    }
+
+    pub fn size_upto_file_data(&self) -> usize {
+        let header = 4 + size_of::<u32>() + self.copyright.len() + HEADER_SEPARATOR.len();
+        let entry_table = get_entry_table_size(self.files.len() as u32);
+
+        header + entry_table
+    }
+
+    /// Turns this `PmanFile` back to its bytes representation.
+    pub fn into_bytes(self) -> io::Result<Vec<u8>> {
+        // FIX: I don't think this function call fail, since I'm allocating the input.
+
+        let files_size = self.files.iter().map(|f| f.bytes().len()).sum::<usize>();
+        let size = self.size_upto_file_data();
+
+        let mut buf = Vec::with_capacity(size + files_size);
+
+        buf.write_all(&HEADER_MAGIC_STRING)?;
+        buf.write_all(&(self.files.len() as u32).to_le_bytes())?;
+        buf.write_all(&self.copyright.as_bytes())?;
+        buf.write_all(&HEADER_SEPARATOR)?;
+
+        let zero_bytes = 0u32.to_le_bytes();
+        self.files.iter().try_fold(size as u32, |offset, file| {
+            let size = file.bytes.len() as u32;
+
+            buf.write_all(&zero_bytes)?;
+            buf.write_all(&offset.to_le_bytes())?;
+            buf.write_all(&size.to_le_bytes())?;
+            buf.write_all(&zero_bytes)?;
+
+            Ok::<_, io::Error>(offset + size)
+        })?;
+
+        self.files
+            .into_iter()
+            .try_for_each(|file| buf.write_all(file.bytes()))?;
+
+        Ok(buf)
     }
 }
 
@@ -224,6 +261,16 @@ mod tests {
     #[test]
     fn pman_new_test() -> eyre::Result<()> {
         _ = PmanFile::new(INPUT.to_vec())?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn into_bytes_test() -> eyre::Result<()> {
+        let pman = PmanFile::new(INPUT.to_vec())?;
+        let bytes = &pman.into_bytes()?;
+
+        assert_eq!(bytes.len() + 170, INPUT.len());
 
         Ok(())
     }

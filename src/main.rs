@@ -15,7 +15,7 @@ fn main() -> eyre::Result<()> {
 
     pman.files()
         .iter()
-        .try_fold(pman.files_start_offset(), |offset, file| {
+        .try_fold(pman.size_upto_file_data(), |offset, file| {
             let mut path = output_dir.join(format!("{:08X}", offset));
 
             if let Some(zlib) = file.to_zlib() {
