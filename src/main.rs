@@ -1,36 +1,33 @@
-#![warn(clippy::pedantic)]
-#![allow(clippy::if_not_else)]
-
-mod format;
-
-use crate::format::PmanFile;
-use format::BinaryChunk;
-use std::{fs, path::Path};
+use rashen::format::pman::PmanFile;
+use std::{
+    fs::{self, read},
+    path::Path,
+};
 
 fn main() -> eyre::Result<()> {
-    let file_bytes = include_bytes!("../.res/packfile.dat");
-    let mut offset = 0;
-    let pman_file = PmanFile::new_read(file_bytes, &mut offset)
-        .expect("packfile.dat should exists and be a valid ashen file.");
+    let bytes = read(".res/packfile.dat")?;
+    let pman = PmanFile::new(bytes)?;
 
     let output_dir = Path::new("output");
     // the directory might not exists, so ignore the error.
     _ = fs::remove_dir_all(output_dir);
     fs::create_dir_all(output_dir)?;
 
-    for (declaration, file) in pman_file.file_declarations.iter().zip(pman_file.files) {
-        let mut path = output_dir.join(format!("{:08X}", declaration.offset));
+    pman.files()
+        .iter()
+        .try_fold(pman.files_start_offset(), |offset, file| {
+            let mut path = output_dir.join(format!("{:08X}", offset));
 
-        if !file.is_zlib() {
-            path.set_extension("dat");
-            fs::write(path, file.data)?;
-        } else {
-            path.set_extension("zlib");
-            fs::write(path, file.zlib_data().expect("Invalid ZLIB archive"))?;
-        }
-    }
+            if let Some(zlib) = file.to_zlib() {
+                path.set_extension("zlib");
+                fs::write(path, zlib)?;
+            } else {
+                path.set_extension("dat");
+                fs::write(path, file.bytes())?;
+            }
 
-    println!("Current file offset {offset:#x}");
+            Ok::<_, std::io::Error>(offset + file.bytes().len())
+        })?;
 
     Ok(())
 }
