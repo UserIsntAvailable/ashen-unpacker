@@ -1,10 +1,12 @@
 use rashen::format::pman::PmanFile;
 use std::{
     fs::{self, read},
+    io,
     path::Path,
 };
 
 fn main() -> eyre::Result<()> {
+    // FIX: depends on cwd.
     let bytes = read(".res/packfile.dat")?;
     let pman = PmanFile::new(bytes)?;
 
@@ -13,21 +15,20 @@ fn main() -> eyre::Result<()> {
     _ = fs::remove_dir_all(output_dir);
     fs::create_dir_all(output_dir)?;
 
-    pman.files()
-        .iter()
-        .try_fold(pman.size_upto_file_data(), |offset, file| {
-            let mut path = output_dir.join(format!("{:08X}", offset));
+    let size = pman.size_upto_file_data();
+    pman.into_iter().try_fold(size, |offset, file| {
+        let mut path = output_dir.join(format!("{:08X}", offset));
 
-            if let Some(zlib) = file.to_zlib() {
-                path.set_extension("zlib");
-                fs::write(path, zlib)?;
-            } else {
-                path.set_extension("dat");
-                fs::write(path, file.bytes())?;
-            }
+        if let Some(zlib) = file.to_zlib() {
+            path.set_extension("zlib");
+            fs::write(path, zlib)?;
+        } else {
+            path.set_extension("dat");
+            fs::write(path, file.bytes())?;
+        }
 
-            Ok::<_, std::io::Error>(offset + file.bytes().len())
-        })?;
+        Ok::<_, io::Error>(offset + file.bytes().len())
+    })?;
 
     Ok(())
 }

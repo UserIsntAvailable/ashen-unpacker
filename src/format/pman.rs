@@ -5,28 +5,27 @@ use nom::{
     number::complete::le_u32,
     IResult,
 };
-use std::{io, mem::size_of};
 use std::{
-    io::{Read, Write},
+    io::{self, Read, Write},
+    mem::size_of,
     ops::Index,
 };
 
 type Result<'a, T> = IResult<&'a [u8], T>;
 
 #[allow(dead_code)]
-enum FileType {
+enum PmanFileType {
     Unknown,
-    /// Information about the current map being played, could be from main
-    /// campaign or multiplayer.
+    /// Information about the current map being played.
     Level,
     /// COLL
     Collision,
     /// TWPT
     Waypoint,
-    /// The color of the textures.
-    Color,
-    /// utf-16 text
-    Language,
+    /// The color palette used for textures.
+    Palette,
+    /// Mainly for different language text. UTF-16
+    Text,
 }
 
 pub struct PmanFileData {
@@ -164,11 +163,10 @@ impl PmanFile {
 
     /// Turns this `PmanFile` back to its bytes representation.
     pub fn into_bytes(self) -> io::Result<Vec<u8>> {
-        // FIX: I don't think this function call fail, since I'm allocating the input.
-
         let files_size = self.files.iter().map(|f| f.bytes().len()).sum::<usize>();
         let size = self.size_upto_file_data();
 
+        // FIX: Could potentially fail if size + files_size >= isize::MAX;
         let mut buf = Vec::with_capacity(size + files_size);
 
         buf.write_all(&HEADER_MAGIC_STRING)?;
@@ -177,6 +175,9 @@ impl PmanFile {
         buf.write_all(&HEADER_SEPARATOR)?;
 
         let zero_bytes = 0u32.to_le_bytes();
+        // FIX: as u32 is not safe if size is bigger that u32::MAX.
+        // Realistically speaking that is unlikely, but I should be more explicit with what an
+        // invalid file should look like.
         self.files.iter().try_fold(size as u32, |offset, file| {
             let size = file.bytes.len() as u32;
 
@@ -188,8 +189,7 @@ impl PmanFile {
             Ok::<_, io::Error>(offset + size)
         })?;
 
-        self.files
-            .into_iter()
+        self.into_iter()
             .try_for_each(|file| buf.write_all(file.bytes()))?;
 
         Ok(buf)
