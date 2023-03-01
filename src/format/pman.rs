@@ -1,12 +1,12 @@
 use flate2::read::ZlibDecoder;
 use nom::{
     bytes::complete::{tag, take},
-    multi::count,
+    multi::fill,
     number::complete::le_u32,
     IResult,
 };
-use std::io::Read;
 use std::mem::size_of;
+use std::{io::Read, ops::Index};
 
 type Result<'a, T> = IResult<&'a [u8], T>;
 
@@ -45,8 +45,9 @@ impl PmanFileData {
             let size = u32::from_le_bytes([self.bytes[2], self.bytes[3], self.bytes[4], 0]);
             let mut decoder = ZlibDecoder::new(&self.bytes[5..]);
             let mut zlib = Vec::<u8>::with_capacity(size as usize);
-            // FIX: Check if enough bytes were read.
-            // FIX: Error handling
+            // FIX: Error handling:
+            // - Check if enough bytes were read.
+            // - Remove unwrap.
             decoder.read_to_end(&mut zlib).unwrap();
 
             zlib
@@ -76,36 +77,40 @@ fn parse_entry_table(input: &[u8], file_count: u32) -> Result<&[u8]> {
     take(get_entry_table_size(file_count))(input)
 }
 
-// TODO: There is probably a better way of doing this.
-//
-// The offset value of a entry is not always prev_offset + prev_size. Idk why that could be the
-// case, but oh well it is what it is.
 fn parse_files<'a>(
     input: &'a [u8],
     entry_table: &'a [u8],
     file_count: u32,
 ) -> Result<'a, Vec<PmanFileData>> {
     let file_count = file_count as usize;
-    let offset = u32::from_le_bytes(entry_table[4..8].try_into().unwrap());
 
-    let (_, files) = count(
-        |entry_table| {
-            let (entry_table, u32) = count(le_u32, 4)(entry_table)?;
-            let offset = u32[1] as usize - offset as usize;
-            let data = &input[offset..offset + u32[2] as usize];
+    fn parse_entry(entry_table: &[u8]) -> Result<(usize, usize)> {
+        let mut fields = [0; 4];
+        let (entry_table, ()) = fill(le_u32, &mut fields)(entry_table)?;
+        // FIX: assert that fields[0] and fields[3] should be 0.
 
-            Ok((
-                entry_table,
-                PmanFileData {
-                    // TODO: Automatic zlib decompression.
-                    bytes: data.to_vec(),
-                },
-            ))
+        Ok((entry_table, (fields[1] as usize, fields[2] as usize)))
+    }
+
+    let (_, (file_offset, _)) = parse_entry(entry_table)?;
+    let files = Vec::with_capacity(file_count);
+
+    let (input, _, _, files) = (0..file_count).try_fold(
+        (input, entry_table, (file_offset, 0), files),
+        |(input, entry_table, (prev_offset, prev_size), mut files), _| {
+            let (entry_table, entry) = parse_entry(entry_table)?;
+            let (input, _) = take(entry.0 - (prev_offset + prev_size))(input)?;
+            let (input, data) = take(entry.1)(input)?;
+
+            files.push(PmanFileData {
+                bytes: data.to_vec(),
+            });
+
+            Ok((input, entry_table, entry, files))
         },
-        file_count,
-    )(entry_table)?;
+    )?;
 
-    Ok((&input[input.len() - 4..], files))
+    Ok((input, files))
 }
 
 pub struct PmanFile {
@@ -113,8 +118,6 @@ pub struct PmanFile {
     files: Vec<PmanFileData>,
 }
 
-// TODO: impl IntoIterator
-// TODO: impl Index
 impl PmanFile {
     pub fn new(bytes: Vec<u8>) -> eyre::Result<PmanFile> {
         // needed to infer the err case of `?`.
@@ -122,7 +125,7 @@ impl PmanFile {
             let (input, (copyright, file_count)) = parse_header(bytes)?;
             let (input, entry_table) = parse_entry_table(input, file_count)?;
             let (input, files) = parse_files(input, entry_table, file_count)?;
-            let (input, _) = tag("Fmom")(input)?;
+            // FIX: assert input is empty.
 
             Ok((input, PmanFile { copyright, files }))
         }
@@ -153,6 +156,23 @@ impl PmanFile {
 
     pub fn files_mut(&mut self) -> &mut Vec<PmanFileData> {
         &mut self.files
+    }
+}
+
+impl IntoIterator for PmanFile {
+    type Item = PmanFileData;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.files.into_iter()
+    }
+}
+
+impl Index<usize> for PmanFile {
+    type Output = PmanFileData;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.files[index]
     }
 }
 
@@ -202,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn file_test() -> eyre::Result<()> {
+    fn pman_new_test() -> eyre::Result<()> {
         _ = PmanFile::new(INPUT.to_vec())?;
 
         Ok(())
