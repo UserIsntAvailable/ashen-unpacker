@@ -6,8 +6,10 @@ use std::{
 };
 
 fn main() -> eyre::Result<()> {
-    // FIX: depends on cwd.
+    // FIX(Unavailable): depends on cwd.
     let bytes = read(".res/packfile.dat")?;
+    // FIX(Unavailable): When an error occurs, the user gets a paywall of bits, which is not that
+    // useful of a error message.
     let pman = PmanFile::new(bytes)?;
 
     let output_dir = Path::new("output");
