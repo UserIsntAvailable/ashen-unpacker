@@ -1,10 +1,11 @@
-use super::Result;
+use super::Entry;
+use crate::error::{NomError, NomResult, Result};
 use flate2::read::ZlibDecoder;
 use nom::{
     bytes::complete::{tag, take, take_till},
-    multi::fill,
     number::complete::le_u32,
 };
+use nom_supreme::final_parser::final_parser;
 use std::{
     io::{self, Read, Write},
     mem::size_of,
@@ -60,7 +61,7 @@ impl PmanFileData {
 const HEADER_MAGIC_STRING: [u8; 4] = [b'P', b'M', b'A', b'N'];
 const COPYRIGHT_MAX_SIZE: usize = 56;
 
-fn parse_header(input: &[u8]) -> Result<(String, u32)> {
+fn parse_header(input: &[u8]) -> NomResult<(String, u32)> {
     let (input, _) = tag(HEADER_MAGIC_STRING)(input)?;
     let (input, file_count) = le_u32(input)?;
     let (input, copyright) = take_till(|b| b == 0)(input)?;
@@ -77,7 +78,7 @@ fn get_entry_table_size(file_count: u32) -> usize {
     file_count as usize * size_of::<u32>() * 4
 }
 
-fn parse_entry_table(input: &[u8], file_count: u32) -> Result<&[u8]> {
+fn parse_entry_table(input: &[u8], file_count: u32) -> NomResult<&[u8]> {
     take(get_entry_table_size(file_count))(input)
 }
 
@@ -85,33 +86,38 @@ fn parse_files<'a>(
     input: &'a [u8],
     entry_table: &'a [u8],
     file_count: u32,
-) -> Result<'a, Vec<PmanFileData>> {
+) -> NomResult<'a, Vec<PmanFileData>> {
     let file_count = file_count as usize;
 
-    fn parse_entry(entry_table: &[u8]) -> Result<(usize, usize)> {
-        let mut fields = [0; 4];
-        let (entry_table, ()) = fill(le_u32, &mut fields)(entry_table)?;
-        // FIX(Unavailable): assert that fields[0] and fields[3] should be 0.
-
-        Ok((entry_table, (fields[1] as usize, fields[2] as usize)))
+    fn parse_entry(input: &[u8]) -> NomResult<Entry> {
+        // FIX(Unavailable): assert that it is 0.
+        let (input, _) = le_u32(input)?;
+        Entry::from_bytes(input)
     }
 
-    let (_, (file_offset, _)) = parse_entry(entry_table)?;
-    let files = Vec::with_capacity(file_count);
+    let (_, entry) = parse_entry(entry_table)?;
+    let mut files = Vec::with_capacity(file_count);
 
-    // TODO(Unavailable): This can be improved with `count`.
-    let (input, _, _, files) = (0..file_count).try_fold(
-        (input, entry_table, (file_offset, 0), files),
-        |(input, entry_table, (prev_offset, prev_size), mut files), _| {
+    let (input, _, _) = (0..file_count).try_fold(
+        (input, entry_table, Entry::new(entry.offset, 0)),
+        |(
+            input,
+            entry_table,
+            Entry {
+                offset: prev_offset,
+                size: prev_size,
+            },
+        ),
+         _| {
             let (entry_table, entry) = parse_entry(entry_table)?;
-            let (input, _) = take(entry.0 - (prev_offset + prev_size))(input)?;
-            let (input, data) = take(entry.1)(input)?;
+            let (input, _) = take(entry.offset - (prev_offset + prev_size))(input)?;
+            let (input, data) = take(entry.size)(input)?;
 
             files.push(PmanFileData {
                 bytes: data.to_vec(),
             });
 
-            Ok((input, entry_table, entry, files))
+            Ok((input, entry_table, entry))
         },
     )?;
 
@@ -124,18 +130,18 @@ pub struct PmanFile {
 }
 
 impl PmanFile {
-    pub fn new(bytes: Vec<u8>) -> eyre::Result<PmanFile> {
+    pub fn new(bytes: &'_ [u8]) -> Result<PmanFile> {
         // needed to infer the err case of `?`.
-        fn _new(bytes: &[u8]) -> Result<PmanFile> {
+        fn _new(bytes: &[u8]) -> NomResult<PmanFile> {
             let (input, (copyright, file_count)) = parse_header(bytes)?;
             let (input, entry_table) = parse_entry_table(input, file_count)?;
             let (input, files) = parse_files(input, entry_table, file_count)?;
-            // FIX(Unavailable): assert input is empty.
 
             Ok((input, PmanFile { copyright, files }))
         }
 
-        Ok(_new(&bytes).map_err(|err| err.map_input(<[u8]>::to_vec))?.1)
+        // final_parser will report if there was any leftover bytes after "the end".
+        Ok(final_parser::<_, _, _, NomError>(_new)(bytes)?)
     }
 
     pub fn copyright(&self) -> &str {
@@ -284,14 +290,14 @@ mod tests {
 
     #[test]
     fn pman_new_test() -> eyre::Result<()> {
-        _ = PmanFile::new(INPUT.to_vec())?;
+        _ = PmanFile::new(INPUT)?;
 
         Ok(())
     }
 
     #[test]
     fn into_bytes_test() -> eyre::Result<()> {
-        let pman = PmanFile::new(INPUT.to_vec())?;
+        let pman = PmanFile::new(INPUT)?;
         let bytes = &pman.into_bytes()?;
 
         assert_eq!(bytes.len() + 170, INPUT.len());
