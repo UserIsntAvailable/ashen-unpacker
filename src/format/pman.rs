@@ -1,11 +1,12 @@
 use super::Entry;
-use crate::error::{NomError, NomResult, Result};
+use crate::error::{NomContext, NomError, NomResult, Result};
 use flate2::read::ZlibDecoder;
 use nom::{
     bytes::complete::{tag, take, take_till},
     number::complete::le_u32,
+    Parser,
 };
-use nom_supreme::final_parser::final_parser;
+use nom_supreme::{final_parser::final_parser, ParserExt};
 use std::{
     io::{self, Read, Write},
     mem::size_of,
@@ -58,31 +59,34 @@ impl PmanFileData {
     }
 }
 
-const HEADER_MAGIC_STRING: [u8; 4] = [b'P', b'M', b'A', b'N'];
+const HEADER_MAGIC_STRING: &[u8; 4] = b"PMAN";
 const COPYRIGHT_MAX_SIZE: usize = 56;
 
-fn parse_header(input: &[u8]) -> NomResult<(String, u32)> {
+fn read_header(input: &[u8]) -> NomResult<(String, u32)> {
     let (input, _) = tag(HEADER_MAGIC_STRING)(input)?;
-    let (input, file_count) = le_u32(input)?;
+    let (input, file_entries_count) = le_u32(input)?;
     let (input, copyright) = take_till(|b| b == 0)(input)?;
     // FIX(Unavailable): assert that copyright.len() is not bigger than 56.
     let (input, _) = take(COPYRIGHT_MAX_SIZE - copyright.len())(input)?;
 
     Ok((
         input,
-        (String::from_utf8_lossy(copyright).into(), file_count),
+        (
+            String::from_utf8_lossy(copyright).into(),
+            file_entries_count,
+        ),
     ))
 }
 
-fn get_entry_table_size(file_count: u32) -> usize {
-    file_count as usize * size_of::<u32>() * 4
+fn get_entry_table_size(file_entries_count: u32) -> usize {
+    file_entries_count as usize * size_of::<u32>() * 4
 }
 
-fn parse_entry_table(input: &[u8], file_count: u32) -> NomResult<&[u8]> {
-    take(get_entry_table_size(file_count))(input)
+fn read_file_entries(input: &[u8], file_entries_count: u32) -> NomResult<&[u8]> {
+    take(get_entry_table_size(file_entries_count))(input)
 }
 
-fn parse_files<'a>(
+fn read_file_data<'a>(
     input: &'a [u8],
     entry_table: &'a [u8],
     file_count: u32,
@@ -133,9 +137,17 @@ impl PmanFile {
     pub fn new(bytes: &'_ [u8]) -> Result<PmanFile> {
         // needed to infer the err case of `?`.
         fn _new(bytes: &[u8]) -> NomResult<PmanFile> {
-            let (input, (copyright, file_count)) = parse_header(bytes)?;
-            let (input, entry_table) = parse_entry_table(input, file_count)?;
-            let (input, files) = parse_files(input, entry_table, file_count)?;
+            let (input, (copyright, file_entries_count)) = read_header
+                .context(NomContext::section("header"))
+                .parse(bytes)?;
+
+            let (input, file_entries) = (|input| read_file_entries(input, file_entries_count))
+                .context(NomContext::section("file entries"))
+                .parse(input)?;
+
+            let (input, files) = (|input| read_file_data(input, file_entries, file_entries_count))
+                .context(NomContext::section("file data"))
+                .parse(input)?;
 
             Ok((input, PmanFile { copyright, files }))
         }
@@ -195,7 +207,7 @@ impl PmanFile {
         // state beforehand.
         let mut buf = Vec::with_capacity(size + files_size);
 
-        buf.write_all(&HEADER_MAGIC_STRING)?;
+        buf.write_all(HEADER_MAGIC_STRING)?;
         buf.write_all(&(self.files.len() as u32).to_le_bytes())?;
         buf.write_all(&self.copyright.as_bytes())?;
 
@@ -253,7 +265,7 @@ mod tests {
 
     #[test]
     fn header_test() -> eyre::Result<()> {
-        let (_, (copyright, file_count)) = parse_header(INPUT)?;
+        let (_, (copyright, file_count)) = read_header(INPUT)?;
 
         assert_eq!(copyright, "Copyright (c) 2004 Torus Games Pty. Ltd.");
         assert_eq!(file_count, FILE_COUNT);
@@ -263,7 +275,7 @@ mod tests {
 
     #[test]
     fn entry_table_test() -> eyre::Result<()> {
-        let (_, entry_table) = parse_entry_table(&INPUT[ENTRY_TABLE_START..], FILE_COUNT)?;
+        let (_, entry_table) = read_file_entries(&INPUT[ENTRY_TABLE_START..], FILE_COUNT)?;
         let first_entry: [u32; 4] = {
             let slice = &entry_table[..size_of::<u32>() * 4];
 
@@ -280,7 +292,7 @@ mod tests {
         let first_file = &INPUT[0xA20..];
         let entry_table = &INPUT[ENTRY_TABLE_START..];
 
-        let (_, files) = parse_files(first_file, entry_table, FILE_COUNT)?;
+        let (_, files) = read_file_data(first_file, entry_table, FILE_COUNT)?;
         let file = files[77].to_zlib().expect("zlib file data.");
 
         assert_eq!(file[..4], [b'C', b'O', b'L', b'L']);

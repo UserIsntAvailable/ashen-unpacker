@@ -1,4 +1,3 @@
-use colored::Colorize;
 use miette::{Context, IntoDiagnostic, Result};
 use rashen::format::pman::PmanFile;
 use std::{fs, io, path::Path};
@@ -10,8 +9,7 @@ fn main() -> Result<()> {
     // FIX(Unavailable): depends on cwd.
     // FIX(Unavailable): message error could be improved.
     let bytes = fs::read(".res/packfile.dat").into_diagnostic()?;
-    let pman = PmanFile::new(&bytes)
-        .wrap_err_with(|| format!("while parsing the {}.", "packfile.dat".on_red()))?;
+    let pman = PmanFile::new(&bytes).wrap_err("while parsing the packfile.dat file")?;
 
     let output_dir = Path::new("output");
     // the directory might not exists, so ignore the error.
