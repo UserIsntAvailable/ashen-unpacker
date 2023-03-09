@@ -1,12 +1,12 @@
-use super::Result;
+use super::{FileEntry, Result};
 use flate2::read::ZlibDecoder;
 use nom::{
     bytes::complete::{tag, take},
     character::complete::char,
     combinator::eof,
-    multi::fill,
+    multi::{count, separated_list1},
     number::complete::le_u32,
-    sequence::terminated,
+    sequence::{preceded, terminated, Tuple},
 };
 use std::{
     io::{self, Read, Write},
@@ -33,6 +33,7 @@ enum PmanFileType {
     Text,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PmanFileData {
     bytes: Vec<u8>,
     // r#type: PmanFileType TODO(Unavailable): Data detection.
@@ -48,6 +49,8 @@ impl PmanFileData {
     }
 
     pub fn to_zlib(&self) -> Option<Vec<u8>> {
+        // TODO(Unavailable): use nom.
+
         (&self.bytes[..2] == b"ZL").then(|| {
             let size = u32::from_le_bytes([self.bytes[2], self.bytes[3], self.bytes[4], 0]);
             let mut decoder = ZlibDecoder::new(&self.bytes[5..]);
@@ -71,57 +74,68 @@ fn read_header(input: &[u8]) -> Result<(String, u32)> {
 
     let (input, header) = take(HEADER_SIZE)(input)?;
     let (header, _) = tag(HEADER_MAGIC_STRING)(header)?;
-    let (header, file_count) = le_u32(header)?;
+    let (header, file_entry_count) = le_u32(header)?;
     let (header, copyright) = terminated(take(COPYRIGHT_MAX_SIZE), char(NULL))(header)?;
     _ = eof(header)?; // Not really needed, but having a guard doesn't hurt.
 
     let copyright = String::from_utf8_lossy(copyright);
     let copyright = copyright.trim_end_matches(NULL);
 
-    Ok((input, (copyright.into(), file_count)))
+    Ok((input, (copyright.into(), file_entry_count)))
 }
 
-fn entry_table_size(file_count: u32) -> usize {
-    file_count as usize * size_of::<u32>() * 4
+fn entry_table_size(file_entry_count: u32) -> usize {
+    file_entry_count as usize * size_of::<u32>() * 4
 }
 
-fn read_entry_table(input: &[u8], file_count: u32) -> Result<&[u8]> {
-    take(entry_table_size(file_count))(input)
+fn read_file_entries(input: &[u8], file_entry_count: u32) -> Result<Vec<FileEntry>> {
+    let (input, table) = take(entry_table_size(file_entry_count))(input)?;
+    let (table, entries) = separated_list1(super::u32_zero, |table| {
+        // TODO(Unavailable): On the original source code this u32 should be the file type, but for
+        // some reason on the version `1.0.6` this value is always `0`.
+        //
+        // I could rewrite the `packfile.dat` to add this values by default.
+        let (table, _type) = super::u32_zero(table)?;
+
+        FileEntry::from_bytes(table)
+    })(table)?;
+    _ = ((super::u32_zero, eof)).parse(table)?;
+
+    Ok((input, entries))
 }
 
-fn read_files<'a>(
-    input: &'a [u8],
-    entry_table: &'a [u8],
-    file_count: u32,
-) -> Result<'a, Vec<PmanFileData>> {
-    let file_count = file_count as usize;
+fn read_files<'a>(input: &'a [u8], file_entries: Vec<FileEntry>) -> Result<'a, Vec<PmanFileData>> {
+    let len = file_entries.len();
 
-    fn parse_entry(entry_table: &[u8]) -> Result<(usize, usize)> {
-        let mut fields = [0; 4];
-        let (entry_table, ()) = fill(le_u32, &mut fields)(entry_table)?;
-        // FIX(Unavailable): assert that fields[0] and fields[3] should be 0.
+    // TODO(Unavailable): Can this be improved further?
+    let mut prev_entry = file_entries.first().unwrap().with_size(0);
+    let mut iter = file_entries.into_iter();
 
-        Ok((entry_table, (fields[1] as usize, fields[2] as usize)))
-    }
+    let (input, files) = count(
+        |input: &'a [u8]| {
+            let entry = iter.next().unwrap();
+            let FileEntry {
+                offset: prev_offset,
+                size: prev_size,
+            } = prev_entry;
 
-    let (_, (file_offset, _)) = parse_entry(entry_table)?;
-    let files = Vec::with_capacity(file_count);
+            let (input, data) = preceded(
+                // reads the extra NULL bytes from previous offset.
+                take(entry.offset - (prev_offset + prev_size)),
+                take(entry.size),
+            )(input)?;
 
-    // TODO(Unavailable): This can be improved with `count`.
-    let (input, _, _, files) = (0..file_count).try_fold(
-        (input, entry_table, (file_offset, 0), files),
-        |(input, entry_table, (prev_offset, prev_size), mut files), _| {
-            let (entry_table, entry) = parse_entry(entry_table)?;
-            let (input, _) = take(entry.0 - (prev_offset + prev_size))(input)?;
-            let (input, data) = take(entry.1)(input)?;
+            prev_entry = entry;
 
-            files.push(PmanFileData {
-                bytes: data.to_vec(),
-            });
-
-            Ok((input, entry_table, entry, files))
+            Ok((
+                input,
+                PmanFileData {
+                    bytes: data.to_vec(),
+                },
+            ))
         },
-    )?;
+        len,
+    )(input)?;
 
     Ok((input, files))
 }
@@ -135,9 +149,9 @@ impl PmanFile {
     pub fn new(bytes: Vec<u8>) -> eyre::Result<PmanFile> {
         // needed to infer the err case of `?`.
         fn _new(bytes: &[u8]) -> Result<PmanFile> {
-            let (input, (copyright, file_count)) = read_header(bytes)?;
-            let (input, entry_table) = read_entry_table(input, file_count)?;
-            let (input, files) = read_files(input, entry_table, file_count)?;
+            let (input, (copyright, entry_count)) = read_header(bytes)?;
+            let (input, entries) = read_file_entries(input, entry_count)?;
+            let (input, files) = read_files(input, entries)?;
             // FIX(Unavailable): assert input is empty.
 
             Ok((input, PmanFile { copyright, files }))
@@ -264,24 +278,17 @@ mod tests {
 
     #[test]
     fn read_entry_table_test() -> eyre::Result<()> {
-        let (_, entry_table) = read_entry_table(&INPUT[ENTRY_TABLE_START..], FILE_COUNT)?;
-        let first_entry: [u32; 4] = {
-            let slice = &entry_table[..size_of::<u32>() * 4];
+        let (_, entry_table) = read_file_entries(&INPUT[ENTRY_TABLE_START..], FILE_COUNT)?;
 
-            bytemuck::cast::<[u8; 16], _>(slice.try_into().unwrap())
-        };
-
-        assert_eq!(first_entry, [0, 0xA20, 0x6500, 0]);
+        assert_eq!(*entry_table.first().unwrap(), FileEntry::new(0xA20, 0x6500));
 
         Ok(())
     }
 
     #[test]
     fn read_files_test() -> eyre::Result<()> {
-        let first_file = &INPUT[0xA20..];
-        let entry_table = &INPUT[ENTRY_TABLE_START..];
-
-        let (_, files) = read_files(first_file, entry_table, FILE_COUNT)?;
+        let (input, entry_table) = read_file_entries(&INPUT[ENTRY_TABLE_START..], FILE_COUNT)?;
+        let (_, files) = read_files(input, entry_table)?;
         let file = files[77].to_zlib().expect("zlib file data.");
 
         assert_eq!(&file[..4], b"COLL");
